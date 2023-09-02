@@ -1,0 +1,981 @@
+---
+title: "Comprehensive Analysis of the GBSB2 Data"
+author: "Seyifunmi M. Owoeye"
+date: "2023-08-28"
+highlight-style: pygments
+toc : true
+format: 
+      docx:
+        self-contained: true
+        self-contained-math: true
+        code-fold: true
+        code-tools: true
+        code-block-bg: true
+        code-block-border-left: "#31BAE9"
+        code-line-numbers: true
+        number-sections: false
+        theme: cosmo
+        geometry:
+          - top= 10mm
+          - left=20mm
+          - bottom = 15mm
+          - heightrounded
+        #css: styles.css
+editor: 
+      render-on-save: true
+---
+
+<style>
+p {
+  text-align: justify;
+}
+</style>
+
+## Importing the dataset and needed packages
+
+```{r}
+#| label: load-packages
+#| warning: false
+library(randomForest)
+library(randomForestSRC)
+library(flexsurv)
+library(survival)
+library(eha)
+library(survminer)
+library(caret)
+library(party)
+
+
+if (!require(ggplot2)) {
+  install.packages("ggplot2")
+  library(ggplot2)
+}
+
+if (!require(RColorBrewer)) {
+  install.packages("RColorBrewer")
+  library(RColorBrewer)
+}
+
+if (!require(gridExtra)) {
+  install.packages("gridExtra")
+  library(gridExtra)
+}
+
+```
+
+
+```{r}
+#| label: load-data
+#| warning: false
+
+data(GBSG2, package = "TH.data")
+
+#Printing the first 6 rows of the data
+head(GBSG2)
+
+```
+
+```{r}
+str(GBSG2)
+
+df <- GBSG2   # make a copy of the data
+
+df$cens <- factor(df$cens, levels = c(0, 1), labels = c("NoEvent", "Event"))
+summary(df)
+
+summary_stat <- psych::describe(df)
+write.csv(summary_stat, file = "summary_stat.csv")
+
+```
+
+## Distribution of each variable in the data
+
+```{r}
+# Get the non-numeric and numeric variables
+non_numeric_check <- sapply(df, function(x) !is.numeric(x))
+non_numeric_vars <- names(df)[non_numeric_check]
+
+numeric_check <- sapply(df, function(x) is.numeric(x))
+numeric_vars <- names(df)[numeric_check]
+```
+
+
+```{r}
+# Function to generate a color palette using RColorBrewer
+generate_color_palette <- function(num_levels) {
+  if (num_levels <= 2) {
+    # USe custom palette for n < 2
+    return(c("blue", "red"))
+  } else {
+    # For variables with more than two levels, use RColorBrewer
+    return(brewer.pal(num_levels, "Set1"))
+  }
+}
+
+# Create a function to generate bar plots for non-numeric variables
+generate_bar_plots <- function(df, col_names) {
+
+  # Create an empty list to store the plots
+  # plot_list <- list()
+
+  for (col in col_names) {
+    plot_title <- paste("Bar Plot of", col )
+
+    # Generate a palette of colors using RColorBrewer
+    color_palette <- generate_color_palette(length(unique(df[[col]])))
+    
+   p <-  ggplot(df) +
+      geom_bar(aes(x = .data[[col]], fill = .data[[col]]), alpha = 0.9) +
+      labs(x = col, y = "Count") +
+      scale_fill_manual(values = color_palette) + 
+      theme_bw() + 
+      theme(panel.grid.major = element_blank(), 
+            panel.grid.minor = element_blank(),
+            axis.text.x = element_text(size = 12, face = "bold"),
+            axis.text.y = element_text(size = 12,  face = "bold"),
+            axis.title.x = element_text(size = 16),
+            axis.title.y = element_text(size = 16),
+            plot.title = element_blank()) 
+
+  # # Add the plot to the list
+  #   plot_list[[length(plot_list) + 1]] <- p
+
+  print(p)
+
+  # Save each plot with the column name as the filename
+    ggsave(filename = paste0(col, ".png"), plot = p, width = 5, height = 5)
+
+  }
+  # # Arrange the plots in a 2 by 2 grid using grid.arrange
+  # grid.arrange(grobs = plot_list, ncol = 2)
+}
+
+
+generate_histogram <- function(df, col_names){
+  for (col in col_names){
+    p <- ggplot(df, aes(x = .data[[col]])) +
+      geom_histogram(aes(y = after_stat(density)), fill = "blue", color = "black", alpha = 0.6) +
+      geom_density(alpha = 0.2, col = 'red', linewidth = 1) +
+      labs(x = col, y = "Density") +
+      theme_bw() +
+      theme(panel.grid.major = element_blank(), 
+              panel.grid.minor = element_blank(),
+              axis.text.x = element_text(size = 14, face ='bold'),
+              axis.text.y = element_text(size = 14, face = 'bold'),
+              axis.title.x = element_text(size = 16),
+              axis.title.y = element_text(size = 16),
+              plot.title = element_blank()) 
+
+  print(p)
+
+  # Save each plot with the column name as the filename
+    ggsave(filename = paste0(col, ".png"), plot = p, width = 8, height = 8)
+
+  }
+}
+```
+
+
+```{r}
+generate_bar_plots(df, non_numeric_vars)
+
+generate_histogram(df, numeric_vars)
+```
+
+
+
+### HeatMap of Correlation
+
+```{r}
+heat_map <- function(corr_matrix, dir_out){
+  # Convert the correlation matrix to a data frame for ggplot2
+  corr_data <- as.data.frame(as.table(corr_matrix))
+  names(corr_data) <- c("Variable1", "Variable2", "Correlation")
+
+  # Create a ggplot2 correlation heatmap with values
+  ggplot(corr_data, aes(Variable1, Variable2, fill = Correlation)) +
+    geom_tile() +
+    scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                      limits = c(-1, 1)) +
+    labs(title = "Correlation Heatmap with Values",
+        x = "Variables",
+        y = "Variables") +
+    theme_minimal() + 
+    theme(axis.text.x = element_text(size = 14, face = "bold", hjust = 1, angle = 45),
+          axis.text.y = element_text(size = 14, face = "bold"),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_blank()) +
+    geom_text(aes(label = round(Correlation, 2)), vjust = 1) +
+    coord_fixed(ratio = 1) 
+
+  ggsave(dir_out, width = 7, height = 7)
+}
+```
+
+```{r}
+#| label: Correlation heatmap before encoding
+columns_to_exclude <- c("horTh", "menostat", "tgrade", "cens")
+# Create correlation heatmap
+corr_matrix <- cor(df[, !(names(df) %in% columns_to_exclude)])  # Exclude 
+heat_map(corr_matrix, "heatmap.png")
+```
+
+```{r}
+#| label: Correlation Heatmap after Encoding
+# Encode ordinal variable (tgrade)
+df_encoded <- df %>%
+  mutate(df, tgrade = factor(tgrade, levels = c("I", "II", "III"), ordered = TRUE)) %>%
+  mutate(tgrade = as.integer(tgrade))
+
+## Encode nominal categorical variables 
+df_dummy <- dummyVars(" ~ .", data = df_encoded, fullRank = T)
+
+df_encoded <- data.frame(predict(df_dummy, newdata = df_encoded))
+
+corr_matrix_encoded <- cor(df_encoded)
+heat_map(corr_matrix_encoded, "heatmap_encoded.png")
+```
+
+There's a high positive correlation between age and menopausal status. Let's see the distribution of the patients by age and menopausal status combined.
+```{r}
+table(df$age, df$menostat)
+
+```
+
+```{r}
+ggplot(df, aes(x = age, fill = menostat)) +
+  geom_histogram(binwidth = 5, position = "stack", alpha = 0.7) +
+  labs(x = "Age", y = "Frequency", title = "Histogram of Age by Menopausal Status") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(),
+          axis.text.x = element_text(size = 14, face ='bold'),
+          axis.text.y = element_text(size = 14, face = 'bold'),
+          axis.title.x = element_text(size = 16),
+          axis.title.y = element_text(size = 16),
+          plot.title = element_blank(),
+          legend.text = element_text(size = 12, face = 'bold'),
+          legend.title = element_text(size = 14, face = "bold"))
+
+ggsave("menostat_age.png", width = 6, height = 6)
+```
+
+Results indicate that most premanopausal patients are less than age 51 while majority of postmenopausal patients are above age 51. Ina addition, age 41 to 52 is high both groups
+## What is the overall survival rate of breast cancer patients?
+```{r}
+df_surv <- GBSG2
+```
+```{r}
+#| Survival rate
+
+
+# create survival object
+surv_obj <- Surv(time = df_surv$time, event = df_surv$cens)
+
+str(surv_obj)
+```
+
+Element of the object will have a `+` if censored.
+
+```{r}
+events_plot <- ggsurvevents(surv_obj, data = df, 
+                            color = "red",        # Event points color
+                            censor = TRUE,        # Include censoring events
+                            size = 2,             # Size of event points
+                            legend.title = "Events") + theme_bw()
+
+ggsave("events_plot.png", plot = events_plot, width  = 8, height = 8)
+
+print(events_plot)
+```
+
+```{r}
+#Fit Kaplan-Meier Survival curve
+km_fit <- survfit(surv_obj ~ 1)
+
+print(km_fit)
+
+print(head(surv_summary(km_fit)))
+
+print(summary(km_fit, times = max(df_surv$time)))
+```
+
+
+```{r}
+#Specify the specific time point 
+specific_time_point <- 1807 
+
+## summary at the time point
+summary_km_fit <- summary(km_fit, times = specific_time_point)
+
+# Extract the number at risk at the specified time point
+print(summary_km_fit$n.risk)
+```
+
+The median survival time is 1,807 days with 131 patients who are at risk. This suggests that these patients have not experienced cancer recurrence at this time point. Additionally, the overall survival rate at the conclusion of the study is $0.343 (34.3\%)$, indicating the fraction of patients who didn’t experience breast cancer recurrence.
+
+```{r}
+# Plot Kaplan-Meier Survival Curve
+options(repr.plot.width = 8, repr.plot.height = 14)
+gg <- ggsurvplot(km_fit, data = df_surv, risk.table = TRUE,
+          surv.median.line = "hv",
+          tables.height = 0.1,
+          censor.shape = "|",      # plot the number of censored subjects at time t
+          xlab = "Recurrence free survival time (in days)",
+          ggtheme = theme_classic2(base_size=12))
+
+ggsave( "KPM_all.png", gg, width = 7, height = 14, dpi = 1000)
+          
+
+##names(p)
+```
+
+## How does the survival time (time to recurrence) vary by factors 
+
+### Hormonal Therapy (horTh)
+
+```{r}
+horth <- survfit(surv_obj ~ horTh, data = df_surv)
+
+print(horth)
+
+survdiff(surv_obj ~ horTh, data = df)
+```
+
+The median survival time for patients who received hormonal therapy is 2018 days while that of those who didn't receive treatment is 1528 days
+```{r}
+  # Specify the size of the plotting device (adjust dimensions as needed)
+options(repr.plot.width = 8, repr.plot.height = 14)
+
+ gg<- ggsurvplot(horth, data = df_surv, 
+             riak.table = TRUE,
+             palette = c("red", "blue"),
+             conf.int = TRUE,         
+             pval = TRUE,              
+             risk.table = TRUE,        
+             risk.table.col = "strata", # Risk table color by groups
+             surv.median.line = "hv",
+             surv.median.line.col = "strata",
+             legend.labs = c("No", "Yes"),    
+             risk.table.height = 0.1,
+             xlab = "Recurrence free survival time (in days)"
+            #  ggtheme = theme_bw()     
+    )
+
+ggsave("KPM_horTH.png", gg, width = 6, height = 14, dpi = 1000)
+
+# Reset the plotting device size to its default after the plot is generated
+options(repr.plot.width = NULL, repr.plot.height = NULL)
+```
+
+As expected, patients who received hormonal therapy have a higher chance of surviving until the end of the study. Furthermore, the survival rate of patient who received hormonal theraphy is higher at every time point than patients who did not receive wthe treatment. In addition, the difference between the survival rate of the two group is significant, $p-value = 0.0034$.
+
+
+### Menopausal Status (menostat)
+
+```{r}
+menostat_fit <- survfit(surv_obj ~ menostat, data = df_surv)
+
+print(menostat_fit)
+
+survdiff(surv_obj ~ menostat, data = df_surv)
+```
+
+
+
+```{r}
+  # Specify the size of the plotting device (adjust dimensions as needed)
+options(repr.plot.width = 8, repr.plot.height = 14)
+
+gg <- ggsurvplot(menostat_fit, data = df_surv, 
+             riak.table = TRUE,
+             palette = c("red", "blue"),
+             conf.int = TRUE,         
+             pval = TRUE, 
+             pval.method = TRUE,            
+             risk.table = TRUE,        
+             risk.table.col = "strata", # Risk table color by groups
+             surv.median.line = "hv",
+             surv.median.line.col = "strata",
+             legend.labs = c("Pre", "Post"),    
+             risk.table.height = 0.1,
+             xlab = "Recurrence free survival time (in days)"
+            #  ggtheme = theme_bw()     
+    )
+ggsave("KPM_menostat.png", gg, width = 7, height = 14, dpi = 500)
+```
+
+The median survival time of premenopausal status patient is 2015 days while that postmenopausal status is 1701 days. In addition, there is no statistically significant difference in survival between the two groups, $p-value = 0.6$.
+
+### Tumor grade (tgrade)
+```{r}
+tgrade_fit <- survfit(surv_obj ~ tgrade, data = df_surv)
+
+print(tgrade_fit)
+
+survdiff(surv_obj ~ tgrade, data = df_surv)
+```
+
+The median survival time of patients with level II tumor grade is 1730 while those with level III tumor grade is 1337, indicating that patients with a level II tumor has a chance at survival when compared to level III. In addition, the differences in survival is significant between the  groups, $p-value < 0.0001$.
+
+```{r}
+options(repr.plot.width = 8, repr.plot.height = 14)
+gg <- ggsurvplot(tgrade_fit, data = df_surv, 
+            riak.table = TRUE,
+            palette = c("red", "blue", "#E7B800"),
+            conf.int = TRUE,         
+            pval = TRUE,         
+            risk.table = TRUE,        
+            risk.table.col = "strata", # Risk table color by groups
+            surv.median.line = "hv",
+            surv.median.line.col = "strata",
+            legend.labs = c("I", "II", "III"),    
+            risk.table.height = 0.12,
+            xlab = "Recurrence free survival time (in days)"
+          #  ggtheme = theme_bw()     
+  )
+
+ggsave("KPM_tgrade.png", gg, width = 8, height = 14, dpi = 1000)
+```
+
+
+## Impact of factors on survival outcome while accounting for censoring (Variable Selection)
+
+### Relationship between covariates and the hazard  (CoxPH)
+
+```{r}
+#| label : Cos Proportional Hazard
+
+# library(finalfit)
+cox_model <- coxph(surv_obj ~ horTh + age + menostat + tsize + 
+                tgrade + pnodes + progrec + estrec, data = df_surv)
+
+cox_summary <- summary(cox_model)
+```
+
+Make a single table containing the coefficients and confidence intervals from the coxph output
+```{r}
+#|label: single table for coef and C.I
+print(names(cox_summary))   # get names of 
+
+print(cox_summary)
+
+cox_summary_df <-as.data.frame(cox_summary$coefficients)
+
+cox_summary_df <- cbind(cox_summary_df, cox_summary$conf.int[, 3:4])
+
+write.csv( cox_summary_df, "cox_summary.csv")
+```
+According to the Cox Proportional Hazard regression model (Table 3.5), we have identified significant predictors of time to recurrence in breast cancer patient
+
+    - horThyes: Patients who received hormonal therapy (horTh) have a significantly longer expected survival time than who didn't recieve treatment (p-value: 0.0073).
+
+    - age: Age has no statistically significant impact on survival time or hazard of recurrence (p-value: 0.30913).
+
+    - menostatPost: Postmenopausal patients tend to have a slightly lower expected survival time than premenopausal patients, however, this difference is not statistically significant (p-value: 0.15895).
+
+    - tsize: Larger tumor size (tsize) is associated with significantly higher hazard of recurrence. That is, as tumor size increases, the chances of surviving decreases (p-value: 0.047794).
+
+    - tgrade.L: Higher tumor grade (tgrade) significantly increases the hazard of recurrence (p-value: 0.003685). That is, patient with higher grade tumor have a shorter expected survival time
+
+    - tgrade.Q: The quadratic effect of tumor grade on survival time or hazrad of recurrence is not statistically significant (p-value: 0.099199).
+
+    - pnodes: More positive lymph nodes (pnodes) increases the hazard of recurrence significantly (p-value: 5.7e-11).
+
+    - progrec : Higher progesterone receptor is a statistically significant predictor of longer expected survival time (p-value: 0.000111)
+
+    - estrec: Estrogen receptor have no statistically significant impact on the hazard of recurrence (p-value: 0.661307)
+
+
+
+### Survival Tree using Conditional Tree inference
+The only procedure that makes conditional inference trees different from decision trees is that conditional inference trees use a significance test to select input variables rather than selecting the variable that maximizes the information measure.
+
+
+#### Hyperparameter Tuning for cTree
+
+```{r}
+## Split data into training and testing data
+set.seed(123)
+sample_indices <- sample(1:nrow(df_surv), 0.8 * nrow(df_surv))
+train_data <- df_surv[sample_indices, ]
+test_data <- df_surv[-sample_indices, ]
+```
+
+
+##### Using Cross Validation to Find Best Hyperparameter: ctree
+
+```{r}
+set.seed(123)
+
+library(SurvMetrics)
+# Generate random alpha 
+min_alpha <- 0.01
+max_alpha <- 0.4
+alpha <- runif(20, min_alpha, max_alpha)
+
+# Set the number of folds for cross-validation
+num_folds <- 5
+
+# Initialize an empty data frame to store model info
+model_info_all <- data.frame(alpha = numeric(0), C_index = numeric(0))
+
+# Create indices for cross-validation folds
+set.seed(123)  # For reproducibility
+fold_indices <- sample(1:num_folds, nrow(train_data), replace = TRUE)
+
+
+for (alpha_val in alpha) {
+  # Initialize a variable to store performance metrics across folds
+  performance_metrics <- numeric(0)
+  
+  # Perform k-fold cross-validation
+  for (fold in 1:num_folds) {
+    # Split the data into training and validation sets for this fold
+    fold_train_data <- train_data[fold_indices != fold, ] #train_data[which(fold_indices != fold), ]
+    fold_valid_data <- train_data[fold_indices == fold, ]
+    
+    # Train the model on the training data for this fold
+    ctree_model <- ctree(Surv(time, cens) ~ ., data = fold_train_data,
+                         control = ctree_control(mincriterion = 1 - alpha_val))
+    
+    # Make predictions on the validation set
+    predictions <- predict(ctree_model, newdata = fold_valid_data)
+    
+    # Calculate the C-index as the performance metric for this fold
+    performance_metric <- Cindex(
+      Surv(fold_valid_data$time, fold_valid_data$cens), 
+      predictions
+    )
+    
+    # Append the performance metric to the list
+    performance_metrics <- c(performance_metrics, performance_metric)
+  }
+  
+  # Calculate the average performance metric across folds
+  avg_performance <- mean(performance_metrics)
+  
+  # Create a data frame with model information for the current alpha
+  model_info <- data.frame(
+    alpha = alpha_val,
+    C_index = avg_performance
+  )
+  
+  # Append the current model information to the existing data frame
+  model_info_all <- rbind(model_info_all, model_info)
+}
+
+# Find the row with the best performance
+best_row <- which.max(model_info_all$C_index)
+
+# Print the model information and the best model
+print(model_info_all)
+print(model_info_all[best_row, ])
+
+```
+
+The best alpha value is
+```{r}
+alpha_value <- model_info_all[best_row, ]$alpha
+```
+
+#### Performance of the Best ctree model on the testing data
+```{r}
+final_ctree <- ctree(Surv(time, cens) ~ ., data = train_data,
+                       control = ctree_control(mincriterion = 1 - alpha_value))
+plot(final_ctree, main = "Survival Tree for Breast Cancer on the Training Set")
+predictions <- predict(final_ctree, newdata = test_data)
+
+# Calculate the C-index as the performance metric
+performance_metric <- Cindex(Surv(test_data$time, test_data$cens), 
+                              predictions)
+
+performance_metric
+```
+
+#### Performance of the best ctree model on the entire dataset (train+test)
+
+```{r}
+set.seed(123)
+entire_ctree <- ctree(Surv(time, cens) ~ ., data = df_surv,
+                       control = ctree_control(mincriterion = 1 - alpha_value))
+                       
+
+png("survival_tree_plot.png", width = 6000, height = 4000, units = "px", res = 400)
+plot(entire_ctree, col = "red", main = "Survival Tree for Breast Cancer Data")
+dev.off()
+
+predictions <- predict(entire_ctree, newdata =df_surv)
+
+cat("\n The median survival time for each node is:\n")
+table(predictions)
+# Calculate the C-index as the performance metric
+performance_metric <- Cindex(Surv(df_surv$time, df_surv$cens), 
+                              predictions)
+
+performance_metric
+```
+
+```{r}
+terminal_nodes <- factor(predictions)
+sf <- survfit(Surv(time, cens) ~ terminal_nodes, data = df_surv)
+print(sf)
+```
+
+The survival tree reveals that the most significant predictor of time to recurrence in breast cancer patients are number of positive lymph nodes (pnodes), hormonal therapy (horTh), progesterone receptor (progrec), age and menopausal status (menostat) . Notably, Node 4 and Node 18  has the best Kaplan-Meier survival curve, with median survival times of 2030 and 1807 days, respectively.  
+
+```{r}
+# sf_df <- data.frame(
+# terminal_nodes = c(14, 13, 8, 19, 10, 18, 4, Inf),
+#   n = c(57, 87, 21, 101, 112, 45, 73, 190),
+#   events = c(48, 55, 13, 51, 51, 21, 27, 33),
+#   median = c(500, 742, 956, 1170, 1675, 1807, 2030, NA),
+#   LCL_95 = c(426, 577, 491, 945, 1329, 1146, 1763, NA),
+#   UCL_95 = c(747, 1366, NA, NA, NA, NA, NA, NA)
+# )
+
+# write.csv(sf_df, "ctree_nodes.csv")
+```
+
+
+### Survival Tree Using randomForestSRC
+
+### Variable Selection
+```{r}
+# df_obj <- rfsrc(Surv(time, cens) ~ ., df, importance = TRUE)
+# imp_var <- var.select(object = df_obj, conservative = "low")
+# topvars <- imp_var$topvars
+```
+
+
+### Obtaining paired importance of the variables
+```{r}
+df.obj <- rfsrc(Surv(time, cens) ~ ., data = df, importance = TRUE)
+find.interaction(df.obj, method = "vimp")
+```
+
+
+```{r}
+# tuned_model <- tune(Surv(time, cens) ~ ., data = df,
+#   mtryStart = floor(ncol(df)/2),
+#   nodesizeTry = c(1:9, seq(10, 100, by = 5)),
+#   ntreeTry = 100,
+#   sampsize = function(x) {
+#     min(x * .632, max(150, x ^ (3/4)))
+#   },
+#   nsplit = 1,
+#   stepFactor = 1.25,
+#   improve = 1e-3,
+#   strikeout = 3,
+#   maxIter = 25,
+#   trace = FALSE,
+#   doBest = FALSE
+# )
+
+# df_obj <- rfsrc(Surv(time, cens) ~ ., data = df, 
+#           importance = TRUE, nodesize = 10, mtry = 6)
+# imp_var <- var.select(object = df_obj, conservative = "low")
+# topvars <- imp_var$topvars
+```
+
+## Predicting Recurrence of Breast Cancer Using Different Classification Models
+
+```{r}
+## Split data into training and testing data
+set.seed(123)
+sample_indices <- sample(1:nrow(df), 0.75 * nrow(df))
+train_data <- df[sample_indices, ]
+test_data <- df[-sample_indices, ]
+```
+
+### Perform Cross validation for Parameter Tuning and make Predictions
+
+```{r}
+set.seed(123)
+train_and_tune_model <- function(method, outcome_model, tuning_grid, 
+                              evaluation_metric, train_data, test_data, 
+                              reference, positive){
+
+  # Create a trainControl object for initial cross-validation
+  ctrl <- trainControl(
+    method = "repeatedcv",  # Repeated cross-validation
+    number = 5,  # Number of folds
+    repeats = 10,  # Number of repetitions
+    summaryFunction = twoClassSummary,  # Suitable for classification tasks
+    classProbs = TRUE,  # Needed for twoClassSummary
+    selectionFunction = "best",
+    savePredictions = TRUE,
+    verboseIter = FALSE,
+    search = "random"
+  )
+
+  
+  # Train the model with the specified method and tuning grid
+  trained_model <- train(
+    outcome_model,
+    data = train_data,
+    method = method,
+    metric = evaluation_metric,
+    trControl = ctrl,
+    tuneGrid = tuning_grid,
+    preProcess = c("zv", "center", "scale")
+  )
+ 
+  # Get the best combination of hyperparameters
+  best_params <- trained_model$bestTune
+  
+  # Train the final model with the best hyperparameters on the entire training dataset
+  final_model <- train(
+    outcome_model,
+    data = train_data,
+    method = method,
+    metric = "Accuracy",  # Use ROC AUC for evaluation
+    tuneGrid = best_params  # Use the best hyperparameters
+  )
+  
+  # Evaluate performance on the testing dataset
+  predictions <- predict(final_model, newdata = test_data)
+  
+  # Calculate the confusion matrix
+  confusion_matrix <- confusionMatrix(data = predictions, reference = reference,
+                                      positive = positive)
+  
+  # Calculate ROC AUC
+  roc_auc <- confusion_matrix$byClass['ROC']
+  
+  print(plot(trained_model))
+
+  cat("\n \n The results from hyperparameter tuning are given below: \n")
+  print(trained_model)
+  
+  cat("\n The best hyperparameter(s) to use is(are):\n")
+  print(best_params, no.quotes = TRUE)
+  
+  return(list(trained_model = trained_model, final_model = final_model, 
+              confusion_matrix = confusion_matrix, roc_auc = roc_auc))
+}
+
+##Note: summarryFunction uses ROC, Sensitivity and Specificity for measuring performance
+```
+
+I have chosen to use ROC, sensitivity, and specificity as the promary metrics for evaluating model performace because they are less influenced by imbalanced datasets and are more appropriate when the cost of misclassfying both classes are unequal. To be clear, since the cost associated with classifying the recurrence of cancer as a `false negative` is higher compared to making a `false positive prediction`, it become appropriate to use these metrics over accuracy while selecting the best hyperparameter.
+
+In addition, I would prioritize sensitivity (True positive rate) over specificity(true negative rate)
+
+### Classification by Conditional Inference Tree
+```{r}
+set.seed(123)
+tuning_grid <- expand.grid(
+  .mincriterion = runif(10, 0.70, 0.99))#c(0.99, 0.95, 0.9, 0.85, 0.8,0.75, 0.70))  # Adjust mincriterion values
+
+outcome_model = cens ~ horTh + age + menostat + tsize + 
+                        tgrade + pnodes + progrec + estrec
+ctree <- train_and_tune_model(method = 'ctree', outcome_model = outcome_model, 
+                              tuning_grid = tuning_grid, evaluation_metric = 'ROC', 
+                              train_data = train_data, test_data = test_data, reference = test_data$cens, positive = "Event")
+```
+
+The best hyperparamter to use based on ROC and sentivity is `mincriterion` $= 0.80$
+
+```{r}
+# Access the final model, confusion matrix, and accuracy
+ctree_final_model <- ctree$final_model
+confusion_matrix <- ctree$confusion_matrix
+accuracy <- ctree$accuracy
+
+print(ctree_final_model)
+```
+
+COnfusion matrix from the predicxtion is:
+
+```{r}
+print(confusion_matrix)
+```
+
+Print the variable importance table and graph
+
+```{r}
+  final_model_varImp <- varImp(ctree_final_model, scale = FALSE)
+
+  print(final_model_varImp)
+
+  # # Increase font size and make axis labels and markers bold
+  # par(cex.lab = 1.5, font.lab = 10, cex.axis = 10, font.axis = 10)
+  
+  plot(final_model_varImp)
+  #save image
+  dev.copy(png, "ctree_varImp.png")  # Save as a PNG file
+  dev.off()
+```
+
+
+### Logistic Regression
+
+```{r}
+set.seed(123)
+outcome_model = cens ~ horTh + age + menostat + tsize + 
+                        tgrade + pnodes + progrec + estrec
+  ctrl_glm <- trainControl(
+    method = "repeatedcv",  # Repeated cross-validation
+    number = 5,  # Number of folds
+    repeats = 10,  # Number of repetitions
+    summaryFunction = twoClassSummary,  # Suitable for classification tasks
+    selectionFunction = "best",
+    classProbs = TRUE,  # Needed for twoClassSummary
+    savePredictions = TRUE,
+    verboseIter = FALSE
+  )
+
+  glm_model <- train(
+    outcome_model,
+    data = train_data,
+    method = 'glm',
+    metric = 'Accuracy',
+    trControl = ctrl_glm,
+    family = "binomial"
+  )
+  
+  print(glm_model)    # gives information about ROC, sensitivity and specificity
+
+  summary(glm_model)
+
+```
+
+Results indicate that only `pnodes`, `progrec` and `time` are statistically signficant predictors of recurrence of breast cancer.
+
+```{r}
+  ## Variable Importance
+  glm_imp <- varImp(glm_model, scale = FALSE)
+  print(glm_imp)
+
+  plot(glm_imp, col ="blue", lwd = 2)
+  dev.copy(png, "logistic_vImp_plot.png")
+  dev.off() 
+```
+
+```{r}
+ # Evaluate performance on the testing dataset
+  predictions <- predict(glm_model, newdata = test_data)
+  
+  # Calculate the confusion matrix
+  confusion_matrix <- confusionMatrix(data = predictions, reference = test_data$cens,
+                                      positive = "Event")
+  print(confusion_matrix)
+  
+# model <- glm(cens ~ ., data = train_data, family = binomial(link = "logit"))
+# predictedCategory <- ifelse(model$fitted.values > .5, "Event", "NoEvent")
+# sum(train_data$cens == predictedCategory)/length(train_data$cens)
+```
+
+
+### Boosted Logistic Regression
+
+```{r}
+set.seed(123)
+tuning_grid <- expand.grid(
+  .nIter = seq(11,50, 1))  # Adjust mincriterion values
+
+outcome_model = cens ~ horTh + age + menostat + tsize + 
+                        tgrade + pnodes + progrec + estrec
+logBoost <- train_and_tune_model(method = 'LogitBoost', outcome_model =outcome_model, 
+                              tuning_grid = tuning_grid, evaluation_metric = 'ROC', 
+                              train_data = train_data, test_data = test_data, reference = test_data$cens, positive = "Event")
+
+```
+
+```{r}
+# Access the final model, confusion matrix, and accuracy
+logBoost_model <- logBoost$final_model
+confusion_matrix <- logBoost$confusion_matrix
+
+
+print(logBoost_model)
+```
+
+
+```{r}
+  ## Variable Importance
+  logBoost_imp <- varImp(logBoost_model, scale = FALSE)
+  print(logBoost_imp)
+
+  plot(logBoost_imp, col ="blue", lwd = 2)
+  dev.copy(png, "logBoost_vImp_plot.png")
+  dev.off() 
+```
+
+```{r}
+  print(confusion_matrix)
+```
+
+
+### Random Forest
+```{r}
+set.seed(123)
+outcome_model = cens ~ horTh + age + menostat + tsize + 
+                        tgrade + pnodes + progrec + estrec
+
+tuning_grid <- expand.grid(.mtry = c(4:8))
+                        #     .splitrule = c("gini", "extratrees"),
+                        # .min.node.size = c(2, 5, 10))
+
+rf_model <- train_and_tune_model(method = 'rf', outcome_model = outcome_model, 
+                              tuning_grid = tuning_grid, evaluation_metric = 'ROC', 
+                              train_data = train_data, test_data = test_data, reference = test_data$cens, positive = "Event")
+
+
+
+# Access the final model, confusion matrix, and accuracy
+rf_final_model <- rf_model$final_model
+print(rf_final_model)
+
+confusion_matrix <- rf_model$confusion_matrix
+print(confusion_matrix)
+```
+
+```{r}
+  rf_varImp <- varImp(rf_final_model, scale = FALSE)
+
+  print(rf_varImp)
+
+  # # Increase font size and make axis labels and markers bold
+  # par(cex.lab = 1.5, font.lab = 10, cex.axis = 10, font.axis = 10)
+  
+  plot(rf_varImp, col = 'blue', lwd = 2)
+  #save image
+  dev.copy(png, "rf_varImp.png")  # Save as a PNG file
+  dev.off()
+```
+
+### Naive Bayes
+
+```{r}
+tuning_grid <- expand.grid(usekernel = c(TRUE, FALSE),
+                      fL = seq(0,5,0.5),   
+                      adjust = seq(0,5,0.5)  
+                      )
+
+nb_model <- train_and_tune_model(method = 'nb', outcome_model = outcome_model, 
+                              tuning_grid = tuning_grid, evaluation_metric = 'ROC', 
+                              train_data = train_data, test_data = test_data, reference = test_data$cens, positive = "Event")
+
+nb_final_model <- nb_model$final_model
+
+print(nb_final_model)
+
+print(nb_model$confusion_matrix)
+```
+
+```{r}
+  nb_varImp <- varImp(nb_final_model, scale = FALSE)
+
+  print(nb_varImp)
+
+  # # Increase font size and make axis labels and markers bold
+  # par(cex.lab = 1.5, font.lab = 10, cex.axis = 10, font.axis = 10)
+  
+  plot(nb_varImp, col = 'blue', lwd = 2)
+  #save image
+  dev.copy(png, "nb_varImp.png")  # Save as a PNG file
+  dev.off()
+```
